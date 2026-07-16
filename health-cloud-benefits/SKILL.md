@@ -7,6 +7,13 @@ description: Comprehensive schema definitions, table relationships, and SQL join
 
 This skill provides the final, production-ready schema structures, accurate column data types, and core relationship mappings required for Databricks Genie to perfectly query patient benefit and insurance verification data ingested via Lakeflow Connect.
 
+> **Semantic layer:** Before creating the Genie space, build the governed **metric
+> view** described in [Metric View for Genie](#metric-view-for-genie) below and
+> point the space at it. The metric view encodes the copay/deductible/out-of-pocket
+> and utilization metrics once, with the joins pre-declared, so Genie answers
+> benefit questions consistently instead of re-deriving the aggregations and join
+> paths on every question.
+
 ## Table Schemas & Complete Column Metadata
 
 ### 1. member_plan
@@ -230,3 +237,150 @@ JOIN coverage_benefit_item cbi ON cbi.coverage_benefit_id = cb.id
 JOIN coverage_benefit_item_limit cbil ON cbil.coverage_benefit_item_id = cbi.id
 WHERE mp.status = 'Active' 
   AND cb.is_active = true;
+```
+
+---
+
+## Metric View for Genie
+
+The Genie space should be built on a **Unity Catalog metric view** rather than the
+raw tables directly. A metric view is a governed semantic layer (defined in YAML)
+that separates **measures** (what "average deductible remaining" means) from
+**dimensions** (how to slice it — by plan type, coverage type, network), and
+declares the join graph once. Metric views have native AI/BI Genie integration,
+so this gives Genie certified benefit metrics and correct joins for free.
+
+> Replace `${catalog}.${schema}` below with the catalog/schema where the Lakeflow
+> Connect tables land. The metric view requires **Databricks Runtime 17.2+** for
+> YAML `version: 1.1`.
+
+### Step 1: Create the metric view
+
+The view is sourced from `coverage_benefit` (the grain that carries the financial
+benefit figures) and joins outward to the member/plan context. Measures
+re-aggregate safely at any grouping.
+
+```sql
+CREATE OR REPLACE VIEW ${catalog}.${schema}.benefits_metrics
+WITH METRICS
+LANGUAGE YAML
+AS $$
+version: 1.1
+comment: "Governed Health Cloud benefit verification metrics powering the Genie space"
+source: ${catalog}.${schema}.coverage_benefit
+
+joins:
+  - name: member_plan
+    source: ${catalog}.${schema}.member_plan
+    on: source.member_plan_id = member_plan.id
+  - name: purchaser_plan
+    source: ${catalog}.${schema}.purchaser_plan
+    on: member_plan.plan_id = purchaser_plan.id
+
+dimensions:
+  - name: Coverage Type
+    expr: source.coverage_type
+    comment: "Medical, Dental, Vision, Home Health, Pharmacy"
+  - name: Plan Type
+    expr: purchaser_plan.plan_type
+    comment: "PPO, HMO, Medicare, Medicaid, Workers Comp"
+  - name: Line of Business
+    expr: purchaser_plan.line_of_business
+  - name: Verification Status
+    expr: member_plan.verification_status
+  - name: Benefit Period Month
+    expr: DATE_TRUNC('MONTH', source.benefit_period_start_date)
+    comment: "Month the coverage benefit period starts"
+  - name: Is Active Benefit
+    expr: source.is_active
+
+measures:
+  # Volume
+  - name: Coverage Benefit Count
+    expr: COUNT(1)
+  - name: Member Plan Count
+    expr: COUNT(DISTINCT source.member_plan_id)
+
+  # Cost sharing (copays / coinsurance)
+  - name: Avg Primary Care Copay
+    expr: AVG(source.primary_care_copay)
+  - name: Avg Specialist Copay
+    expr: AVG(source.specialist_copay)
+  - name: Avg In-Network Coinsurance Pct
+    expr: AVG(source.in_network_coinsurance_percentage)
+    comment: "Average in-network coinsurance percentage across benefits"
+
+  # Deductibles
+  - name: Avg Individual In-Network Deductible Remaining
+    expr: AVG(source.individual_in_network_deductible_remaining)
+  - name: Total Individual In-Network Deductible Applied
+    expr: SUM(source.individual_in_network_deductible_applied)
+
+  # Out-of-pocket
+  - name: Avg Individual In-Network OOP Remaining
+    expr: AVG(source.individual_in_network_out_of_pocket_remaining)
+    comment: "Average remaining in-network individual out-of-pocket headroom"
+  - name: Total Family In-Network OOP Applied
+    expr: SUM(source.family_in_network_out_of_pocket_applied)
+$$
+```
+
+> **Utilization/quantity metrics** (allowed vs. applied visit quantities) live on
+> `coverage_benefit_item_limit`, which is below the `coverage_benefit` grain. Model
+> those as a **second metric view** sourced from `coverage_benefit_item_limit`
+> (joining up through `coverage_benefit_item` → `coverage_benefit` → `member_plan`
+> → `purchaser_plan` for the same dimensions), e.g. `SUM(allowed_quantity)`,
+> `SUM(applied_quantity)`, and `SUM(allowed_quantity - applied_quantity)` as
+> "Remaining Quantity". Keeping one view per grain avoids fan-out double counting.
+
+### Step 2: Validate the metric view
+
+Metric views require the `MEASURE()` function and do **not** support `SELECT *`:
+
+```sql
+SELECT
+  `Coverage Type`,
+  `Plan Type`,
+  MEASURE(`Avg Individual In-Network Deductible Remaining`) AS avg_deductible_remaining,
+  MEASURE(`Coverage Benefit Count`) AS benefit_count
+FROM ${catalog}.${schema}.benefits_metrics
+WHERE `Is Active Benefit` = true
+GROUP BY ALL
+ORDER BY ALL
+```
+
+### Step 3: Point the Genie space at the metric view(s)
+
+List the metric view(s) as the space's tables — not the raw tables — so Genie
+inherits the governed measures and joins. Add raw tables only when users need
+row-level detail (e.g., "show the individual limit rows for member X").
+
+```python
+create_or_update_genie(
+    display_name="Health Cloud Benefits Verification",
+    table_identifiers=[
+        "${catalog}.${schema}.benefits_metrics",            # cost-sharing metric view
+        "${catalog}.${schema}.benefit_utilization_metrics", # quantity/limit metric view
+    ],
+    description="""Benefit verification analytics backed by governed metric views.
+Cost-sharing measures: Avg Primary Care Copay, Avg Individual In-Network Deductible
+Remaining, Avg Individual In-Network OOP Remaining. Utilization measures: Allowed,
+Applied, and Remaining Quantity. Dimensions: Coverage Type, Plan Type, Line of
+Business, Verification Status, Benefit Period Month.""",
+    sample_questions=[
+        "What is the average in-network deductible remaining by plan type?",
+        "Show remaining visit quantity by coverage type for active benefits",
+        "How many member plans are Active - Verified vs Not Checked?",
+        "Average specialist copay for PPO vs HMO plans",
+    ],
+)
+```
+
+### Why a metric view here
+
+| Without metric view | With metric view |
+|---------------------|------------------|
+| Genie re-derives deductible/OOP averages and the multi-table join every question | One certified definition + declared joins |
+| Ratios/percentages risk incorrect re-aggregation | Measures re-aggregate safely at any grain |
+| Metric logic drifts across dashboards, SQL, and Genie | Single governed source of truth |
+| Fan-out across item/limit tables can double-count | One view per grain prevents double counting |
