@@ -1,18 +1,143 @@
 ---
 name: health-cloud-benefits
-description: Comprehensive schema definitions, table relationships, and SQL join logic for querying the Salesforce Health Cloud Benefits Verification data model. Use this skill whenever a user asks about member plans, insurance coverage limits, or care benefit verification requests.
+description: End-to-end skill for the Salesforce Health Cloud Benefits Verification data model on Databricks — creating a Lakeflow Connect managed ingestion pipeline, building a governed metric view, and generating a Genie space, plus schema, table relationships, and SQL join logic. Use whenever a user asks to ingest Health Cloud benefit data, create an ingestion pipeline from this data model, or query member plans, insurance coverage limits, or care benefit verification requests.
 ---
 
 # Salesforce Health Cloud Benefits Verification Skill
 
 This skill provides the final, production-ready schema structures, accurate column data types, and core relationship mappings required for Databricks Genie to perfectly query patient benefit and insurance verification data ingested via Lakeflow Connect.
 
-> **Semantic layer:** Before creating the Genie space, build the governed **metric
-> view** described in [Metric View for Genie](#metric-view-for-genie) below and
-> point the space at it. The metric view encodes the copay/deductible/out-of-pocket
-> and utilization metrics once, with the joins pre-declared, so Genie answers
-> benefit questions consistently instead of re-deriving the aggregations and join
-> paths on every question.
+> **End-to-end flow this skill supports:**
+> 1. **Ingest** the Health Cloud Benefits objects from Salesforce with a Lakeflow
+>    Connect managed pipeline — see [Ingestion Pipeline](#ingestion-pipeline).
+> 2. **Build the governed metric view** as the semantic layer — see
+>    [Metric View for Genie](#metric-view-for-genie).
+> 3. **Create the Genie space** pointed at that metric view.
+>
+> The metric view encodes the copay/deductible/out-of-pocket and utilization metrics
+> once, with the joins pre-declared, so Genie answers benefit questions consistently
+> instead of re-deriving the aggregations and join paths on every question.
+
+---
+
+## Ingestion Pipeline
+
+Use this section when the user asks to **ingest**, **create a managed ingestion
+pipeline**, or **land the Health Cloud Benefits data model** from Salesforce into
+Databricks (e.g. *"Help me create a managed ingestion pipeline based off this
+health cloud benefit data model"*).
+
+Databricks **Lakeflow Connect** ingests these objects with a managed pipeline
+defined by an `ingestion_definition` spec (the YAML shown in the "Ingest data from
+Salesforce" editor / Genie Code). This skill already knows **which Salesforce
+objects make up the data model**, so it can fill in the `objects` list; only the
+environment-specific values below must come from the user.
+
+### What the skill supplies vs. what to ask the user
+
+| Value | Source |
+|-------|--------|
+| **Salesforce source objects** (`objects[]`) | **This skill** — the data-model objects below |
+| `source_schema` | Always `objects` for Salesforce |
+| Connection name | **Ask the user** — pick from their available Salesforce connections |
+| `destination_catalog` / `destination_schema` | **Ask the user** (the screenshots use catalog with schema `sfdc`) |
+| Pipeline name | **Ask the user** |
+
+### Salesforce objects in the Health Cloud Benefits data model
+
+Ingest these object API names (PascalCase — the Salesforce API names, not the
+landed lowercase table names):
+
+**Core benefit verification objects**
+- `MemberPlan`
+- `PurchaserPlan`
+- `CareBenefitVerifyRequest`
+- `CoverageBenefit`
+- `CoverageBenefitItem`
+- `CoverageBenefitItemLimit`
+
+**Supporting reference objects** (needed for joins, code lookups, and payer/member context)
+- `Account`
+- `CareLimitType`
+- `CodeSet`
+- `Case`
+
+### Pipeline YAML
+
+Fill in `${connection_name}`, `${catalog}`, and `${schema}` from the user's answers,
+then create the pipeline via the "Create and run pipeline" action (or deploy the
+spec as a Databricks Asset Bundle resource). `source_schema: objects` is constant
+for Salesforce.
+
+```yaml
+ingestion_definition:
+  connection_name: ${connection_name}     # e.g. one of the user's Salesforce connections
+  objects:
+    - table:
+        source_schema: objects
+        source_table: MemberPlan
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: PurchaserPlan
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CareBenefitVerifyRequest
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CoverageBenefit
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CoverageBenefitItem
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CoverageBenefitItemLimit
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: Account
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CareLimitType
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: CodeSet
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+    - table:
+        source_schema: objects
+        source_table: Case
+        destination_catalog: ${catalog}
+        destination_schema: ${schema}
+```
+
+> **As a Databricks Asset Bundle** (`resources.pipelines`), wrap the same
+> `ingestion_definition` under a pipeline resource with `catalog`, `target`
+> (destination schema), and `name`. The `objects` block is identical.
+
+### Naming note
+
+Salesforce lands table and column names in Salesforce casing (e.g. table
+`coveragebenefit`, `carebenefitverifyrequest`; columns `Id`, `CreatedDate`). The
+downstream metric view and SQL in this skill must reference those landed names in
+the destination schema. Confirm the exact landed names with the user (or inspect
+the schema) before building the metric view.
+
+---
 
 ## Table Schemas & Complete Column Metadata
 
