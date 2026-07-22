@@ -1,145 +1,403 @@
 ---
 name: health-cloud-benefits
-description: End-to-end skill for the Salesforce Health Cloud Benefits Verification data model on Databricks — creating a Lakeflow Connect managed ingestion pipeline, building a governed metric view, and generating a Genie space, plus schema, table relationships, and SQL join logic. Use whenever a user asks to ingest Health Cloud benefit data, create an ingestion pipeline from this data model, or query member plans, insurance coverage limits, or care benefit verification requests.
+description: End-to-end skill for the Salesforce Health Cloud Benefits Verification data model on Databricks. Scaffolds a Lakeflow Connect managed ingestion pipeline for the 10 core + supporting objects, applies table/column comments, creates governed metric views, then creates a Genie space over the tables and metric views with starter questions. Read this skill when the user asks to "create a benefits verification genie space", set up Health Cloud benefit ingestion, ingest member plans / coverage benefits / care benefit verify requests via Salesforce Lakeflow Connect, or query insurance coverage limits and benefit verification data.
 ---
 
-# Salesforce Health Cloud Benefits Verification Skill
+# Salesforce Health Cloud Benefits Verification — End-to-End
 
-This skill provides the final, production-ready schema structures, accurate column data types, and core relationship mappings required for Databricks Genie to perfectly query patient benefit and insurance verification data ingested via Lakeflow Connect.
+When triggered, follow these steps to scaffold the full Health Cloud Benefits
+ingestion pipeline, governed metric views, and a Genie space for business users.
+Steps 1–4 stand up ingestion; steps 5–9 build the semantic layer and Genie space.
 
-> **End-to-end flow this skill supports:**
-> 1. **Ingest** the Health Cloud Benefits objects from Salesforce with a Lakeflow
->    Connect managed pipeline — see [Ingestion Pipeline](#ingestion-pipeline).
-> 2. **Build the governed metric view** as the semantic layer — see
->    [Metric View for Genie](#metric-view-for-genie).
-> 3. **Create the Genie space** pointed at that metric view.
->
-> The metric view encodes the copay/deductible/out-of-pocket and utilization metrics
-> once, with the joins pre-declared, so Genie answers benefit questions consistently
-> instead of re-deriving the aggregations and join paths on every question.
+The [reference sections](#object-reference) at the bottom (object list, table
+schemas, join graph, SQL examples) are the domain knowledge these steps draw on —
+consult them when filling in objects, joins, and measures.
 
----
+## Step 1 — Gather required inputs
 
-## Ingestion Pipeline
+If any of the following are not already in context, ask the user:
+- **Connection name**: the Salesforce connection to use (call `connectionList` to show available options if needed)
+- **Pipeline name**: default to `health_cloud_benefits` if not specified
+- **Destination catalog**
+- **Destination schema**
 
-Use this section when the user asks to **ingest**, **create a managed ingestion
-pipeline**, or **land the Health Cloud Benefits data model** from Salesforce into
-Databricks (e.g. *"Help me create a managed ingestion pipeline based off this
-health cloud benefit data model"*).
+## Step 2 — Verify permissions
 
-Databricks **Lakeflow Connect** ingests these objects with a managed pipeline
-defined by an `ingestion_definition` spec (the YAML shown in the "Ingest data from
-Salesforce" editor / Genie Code). This skill already knows **which Salesforce
-objects make up the data model**, so it can fill in the `objects` list; only the
-environment-specific values below must come from the user.
+Check that the user has `CreateTable` permission on the destination schema:
+- `checkPermissions(actionName="CreateTable", securableType="SCHEMA", securableFullName="<catalog>.<schema>")`
 
-### What the skill supplies vs. what to ask the user
+## Step 3 — Propose the pipeline spec
 
-| Value | Source |
-|-------|--------|
-| **Salesforce source objects** (`objects[]`) | **This skill** — the data-model objects below |
-| `source_schema` | Always `objects` for Salesforce |
-| Connection name | **Ask the user** — pick from their available Salesforce connections |
-| `destination_catalog` / `destination_schema` | **Ask the user** (the screenshots use catalog with schema `sfdc`) |
-| Pipeline name | **Ask the user** |
+Call `setPendingPipelineSpec` with the complete YAML below, substituting the user's
+values for all `<placeholders>`.
 
-### Salesforce objects in the Health Cloud Benefits data model
-
-Ingest these object API names (PascalCase — the Salesforce API names, not the
-landed lowercase table names):
-
-**Core benefit verification objects**
-- `MemberPlan`
-- `PurchaserPlan`
-- `CareBenefitVerifyRequest`
-- `CoverageBenefit`
-- `CoverageBenefitItem`
-- `CoverageBenefitItemLimit`
-
-**Supporting reference objects** (needed for joins, code lookups, and payer/member context)
-- `Account`
-- `CareLimitType`
-- `CodeSet`
-- `Case`
-
-### Pipeline YAML
-
-Fill in `${connection_name}`, `${catalog}`, and `${schema}` from the user's answers,
-then create the pipeline via the "Create and run pipeline" action (or deploy the
-spec as a Databricks Asset Bundle resource). `source_schema: objects` is constant
-for Salesforce.
+- For Salesforce, `source_schema` is always `objects` and `source_table` is the
+  Salesforce object **API name** (PascalCase).
+- `destination_table` is set explicitly to a **snake_case** name so the landed
+  tables match the schema, join graph, and metric views in this skill. (Without an
+  explicit name, Salesforce objects land lowercased and concatenated, e.g.
+  `coveragebenefit`.)
 
 ```yaml
+name: <pipeline_name>
+catalog: <destination_catalog>
+schema: <destination_schema>
 ingestion_definition:
-  connection_name: ${connection_name}     # e.g. one of the user's Salesforce connections
+  connection_name: <connection_name>
   objects:
+    # ── Core benefit verification objects (6) ──────────────────────
     - table:
         source_schema: objects
         source_table: MemberPlan
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: member_plan
     - table:
         source_schema: objects
         source_table: PurchaserPlan
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: purchaser_plan
     - table:
         source_schema: objects
         source_table: CareBenefitVerifyRequest
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: care_benefit_verify_request
     - table:
         source_schema: objects
         source_table: CoverageBenefit
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: coverage_benefit
     - table:
         source_schema: objects
         source_table: CoverageBenefitItem
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: coverage_benefit_item
     - table:
         source_schema: objects
         source_table: CoverageBenefitItemLimit
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: coverage_benefit_item_limit
+    # ── Supporting reference objects (4) ───────────────────────────
     - table:
         source_schema: objects
         source_table: Account
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: account
     - table:
         source_schema: objects
         source_table: CareLimitType
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: care_limit_type
     - table:
         source_schema: objects
         source_table: CodeSet
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: code_set
     - table:
         source_schema: objects
         source_table: Case
-        destination_catalog: ${catalog}
-        destination_schema: ${schema}
+        destination_catalog: <destination_catalog>
+        destination_schema: <destination_schema>
+        destination_table: care_case
 ```
 
-> **As a Databricks Asset Bundle** (`resources.pipelines`), wrap the same
-> `ingestion_definition` under a pipeline resource with `catalog`, `target`
-> (destination schema), and `name`. The `objects` block is identical.
+## Step 4 — Save and validate
 
-### Naming note
+1. After the user confirms, call `editIngestionPipeline` to persist the spec.
+2. Call `startPipelineDryRun` to validate without ingesting data.
 
-Salesforce lands table and column names in Salesforce casing (e.g. table
-`coveragebenefit`, `carebenefitverifyrequest`; columns `Id`, `CreatedDate`). The
-downstream metric view and SQL in this skill must reference those landed names in
-the destination schema. Confirm the exact landed names with the user (or inspect
-the schema) before building the metric view.
+Note: the metric views and Genie space below become fully functional once the
+pipeline has run and populated the destination tables. You can create them before
+data lands, but validation queries will return no rows until ingestion completes.
+
+## Step 5 — Verify landed schema and apply comments
+
+Salesforce lands **column** names in Salesforce API casing (e.g. `Id`, `Name`,
+`CreatedDate`, `PrimaryCareCopay`) — these are not renamed by the pipeline. Before
+building metric views, confirm the actual column names and add comments so Genie
+has rich metadata.
+
+1. Inspect real column names (repeat per table as needed):
+   ```sql
+   -- via executeCode(language="sql")
+   DESCRIBE TABLE <catalog>.<schema>.coverage_benefit
+   ```
+2. Map the documented semantic columns in the
+   [Table Schemas](#table-schemas--complete-column-metadata) reference to the
+   actual landed column names, and use those actual names in Steps 6 onward.
+3. Apply table and column comments (the descriptions already live in the schema
+   reference — this makes Genie's SQL generation materially more accurate). Run
+   via `executeCode(language="sql")`, one statement at a time:
+   ```sql
+   COMMENT ON TABLE <catalog>.<schema>.coverage_benefit IS
+     'Core financial and structural benefits provided to a covered member by a purchaser plan.';
+
+   ALTER TABLE <catalog>.<schema>.coverage_benefit ALTER COLUMN <IndividualInNetworkDeductibleRemaining>
+     COMMENT 'Remaining individual preferred (in-network) deductible balance.';
+   -- ...repeat for the columns used as dimensions/measures below
+   ```
+
+> If column names in Step 6's metric views don't match the `DESCRIBE` output,
+> substitute the real names before running — otherwise `CREATE VIEW` will fail with
+> "cannot resolve column".
+
+## Step 6 — Create metric views
+
+Create two governed metric views using `executeCode` with `language: "sql"`, run
+separately. Two views (not one) because the financial figures live at the
+`coverage_benefit` grain while utilization/limit figures live at the
+`coverage_benefit_item_limit` grain — one view per grain avoids fan-out double
+counting. Metric views require **Databricks Runtime 17.2+** for YAML `version: 1.1`.
+
+### 6a. Benefits cost-sharing metrics
+
+```sql
+CREATE OR REPLACE VIEW <catalog>.<schema>.benefits_cost_metrics
+WITH METRICS
+LANGUAGE YAML
+AS $$
+  version: 1.1
+  comment: Cost-sharing metrics (copays, deductibles, out-of-pocket) for Health Cloud benefit verification
+  source: <catalog>.<schema>.coverage_benefit
+  joins:
+    - name: member_plan
+      source: <catalog>.<schema>.member_plan
+      on: source.member_plan_id = member_plan.id
+    - name: purchaser_plan
+      source: <catalog>.<schema>.purchaser_plan
+      on: member_plan.plan_id = purchaser_plan.id
+  dimensions:
+    - name: Coverage Type
+      expr: source.coverage_type
+      comment: Medical, Dental, Vision, Home Health, Pharmacy
+    - name: Plan Type
+      expr: purchaser_plan.plan_type
+      comment: PPO, HMO, Medicare, Medicaid, Workers Comp
+    - name: Line of Business
+      expr: purchaser_plan.line_of_business
+    - name: Verification Status
+      expr: member_plan.verification_status
+    - name: Benefit Period Month
+      expr: DATE_TRUNC('MONTH', source.benefit_period_start_date)
+      comment: Month the coverage benefit period starts
+    - name: Is Active Benefit
+      expr: source.is_active
+  measures:
+    - name: Coverage Benefit Count
+      expr: COUNT(1)
+    - name: Member Plan Count
+      expr: COUNT(DISTINCT source.member_plan_id)
+    - name: Avg Primary Care Copay
+      expr: AVG(source.primary_care_copay)
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+    - name: Avg Specialist Copay
+      expr: AVG(source.specialist_copay)
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+    - name: Avg In-Network Coinsurance Pct
+      expr: AVG(source.in_network_coinsurance_percentage)
+      comment: Average in-network coinsurance percentage across benefits
+      format:
+        type: percentage
+        decimal_places: { type: exact, places: 1 }
+    - name: Avg Individual In-Network Deductible Remaining
+      expr: AVG(source.individual_in_network_deductible_remaining)
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+    - name: Total Individual In-Network Deductible Applied
+      expr: SUM(source.individual_in_network_deductible_applied)
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+    - name: Avg Individual In-Network OOP Remaining
+      expr: AVG(source.individual_in_network_out_of_pocket_remaining)
+      comment: Average remaining in-network individual out-of-pocket headroom
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+    - name: Total Family In-Network OOP Applied
+      expr: SUM(source.family_in_network_out_of_pocket_applied)
+      format:
+        type: currency
+        currency_code: USD
+        decimal_places: { type: exact, places: 2 }
+$$
+```
+
+### 6b. Benefit utilization metrics
+
+Sourced from the item-limit grain, joining up to plan context. Captures
+allowed vs. applied vs. remaining service quantities.
+
+```sql
+CREATE OR REPLACE VIEW <catalog>.<schema>.benefit_utilization_metrics
+WITH METRICS
+LANGUAGE YAML
+AS $$
+  version: 1.1
+  comment: Service utilization and limit metrics for Health Cloud benefit verification
+  source: <catalog>.<schema>.coverage_benefit_item_limit
+  joins:
+    - name: coverage_benefit_item
+      source: <catalog>.<schema>.coverage_benefit_item
+      on: source.coverage_benefit_item_id = coverage_benefit_item.id
+    - name: coverage_benefit
+      source: <catalog>.<schema>.coverage_benefit
+      on: coverage_benefit_item.coverage_benefit_id = coverage_benefit.id
+    - name: member_plan
+      source: <catalog>.<schema>.member_plan
+      on: coverage_benefit.member_plan_id = member_plan.id
+    - name: purchaser_plan
+      source: <catalog>.<schema>.purchaser_plan
+      on: member_plan.plan_id = purchaser_plan.id
+  dimensions:
+    - name: Coverage Type
+      expr: coverage_benefit.coverage_type
+    - name: Plan Type
+      expr: purchaser_plan.plan_type
+    - name: Service Type
+      expr: coverage_benefit_item.service_type
+    - name: Network Type
+      expr: source.network_type
+      comment: In, Out, or NA (in-network, out-of-network, not applicable)
+    - name: Coverage Level
+      expr: source.coverage_level
+      comment: Individual, Family, EmployeeSpouse
+    - name: Term Type
+      expr: source.term_type
+      comment: Calendar Year, Day, Month, Year to Date
+  measures:
+    - name: Limit Rule Count
+      expr: COUNT(1)
+    - name: Total Allowed Quantity
+      expr: SUM(source.allowed_quantity)
+    - name: Total Applied Quantity
+      expr: SUM(source.applied_quantity)
+    - name: Total Remaining Quantity
+      expr: SUM(source.allowed_quantity - source.applied_quantity)
+      comment: Allowed minus applied service quantity (headroom left)
+    - name: Avg Utilization Rate
+      expr: SUM(source.applied_quantity) / NULLIF(SUM(source.allowed_quantity), 0)
+      comment: Applied / allowed quantity ratio
+      format:
+        type: percentage
+        decimal_places: { type: exact, places: 1 }
+$$
+```
+
+### Validate
+
+Metric views require the `MEASURE()` function and do **not** support `SELECT *`:
+
+```sql
+SELECT
+  `Coverage Type`,
+  `Plan Type`,
+  MEASURE(`Avg Individual In-Network Deductible Remaining`) AS avg_deductible_remaining,
+  MEASURE(`Coverage Benefit Count`) AS benefit_count
+FROM <catalog>.<schema>.benefits_cost_metrics
+WHERE `Is Active Benefit` = true
+GROUP BY ALL
+ORDER BY ALL
+```
+
+## Step 7 — Create Genie space
+
+Create a Genie space over the two metric views **plus** the core raw tables (metric
+views give governed answers; raw tables let users drill to row-level detail). Use
+`createAsset` with `assetType: "genie"`:
+
+```
+createAsset({
+  assetType: "genie",
+  name: "Health Cloud Benefits Verification",
+  description: "Benefit verification analytics for member plans, coverage benefits, and utilization limits. Prefer the metric views (benefits_cost_metrics, benefit_utilization_metrics) for aggregate questions; join through member_plan -> coverage_benefit -> coverage_benefit_item -> coverage_benefit_item_limit for row-level detail.",
+  tableIdentifiers: [
+    "<catalog>.<schema>.benefits_cost_metrics",
+    "<catalog>.<schema>.benefit_utilization_metrics",
+    "<catalog>.<schema>.member_plan",
+    "<catalog>.<schema>.purchaser_plan",
+    "<catalog>.<schema>.care_benefit_verify_request",
+    "<catalog>.<schema>.coverage_benefit",
+    "<catalog>.<schema>.coverage_benefit_item",
+    "<catalog>.<schema>.coverage_benefit_item_limit",
+    "<catalog>.<schema>.account",
+    "<catalog>.<schema>.care_limit_type",
+    "<catalog>.<schema>.code_set",
+    "<catalog>.<schema>.care_case"
+  ]
+})
+```
+
+## Step 8 — Navigate to Genie space
+
+```
+openAsset({
+  assetType: "genie",
+  assetId: "<genie_space_id>",
+  assetName: "Health Cloud Benefits Verification",
+  navigate: true,
+  continueMessage: ""
+})
+```
+
+Use the `assetId` returned by `createAsset`.
+
+## Step 9 — Add starter questions
+
+Add starter questions that reference the metric views so business users have
+accurate, one-click entry points:
+
+```
+addStarterQuestions({
+  questions: [
+    { questionText: "What is the MEASURE(Avg Individual In-Network Deductible Remaining) by Plan Type from benefits_cost_metrics?", isDeepResearch: true },
+    { questionText: "Compare MEASURE(Avg Specialist Copay) across Plan Type from benefits_cost_metrics", isDeepResearch: true },
+    { questionText: "Show MEASURE(Coverage Benefit Count) grouped by Verification Status from benefits_cost_metrics", isDeepResearch: true },
+    { questionText: "What is the MEASURE(Total Remaining Quantity) by Coverage Type for active benefits from benefit_utilization_metrics?", isDeepResearch: true },
+    { questionText: "Which Service Types have the highest MEASURE(Avg Utilization Rate) from benefit_utilization_metrics?", isDeepResearch: true }
+  ]
+})
+```
+
+---
+
+## Object reference
+
+**Core benefit verification objects (6)** — Salesforce API name → landed table:
+`MemberPlan` → `member_plan`, `PurchaserPlan` → `purchaser_plan`,
+`CareBenefitVerifyRequest` → `care_benefit_verify_request`,
+`CoverageBenefit` → `coverage_benefit`, `CoverageBenefitItem` → `coverage_benefit_item`,
+`CoverageBenefitItemLimit` → `coverage_benefit_item_limit`
+
+**Supporting reference objects (4)**:
+`Account` → `account`, `CareLimitType` → `care_limit_type`, `CodeSet` → `code_set`,
+`Case` → `care_case` (renamed to avoid the reserved word `case`)
 
 ---
 
 ## Table Schemas & Complete Column Metadata
+
+> These are the **semantic** column definitions for the data model. Salesforce lands
+> the physical columns in API casing — reconcile names via `DESCRIBE TABLE`
+> (Step 5) before use.
 
 ### 1. member_plan
 Represents details about the insurance coverage for a member or subscriber.
@@ -150,7 +408,7 @@ Represents details about the insurance coverage for a member or subscriber.
 - `subscriber_id` (STRING): The ID of the primary subscriber’s record.
 - `relationship_to_subscriber` (STRING): Picklist value mapping the relationship to the subscriber (e.g., 'Self', 'Spouse', 'Child', 'Unknown', 'Other Relationship').
 - `plan_id` (STRING): Foreign key lookup pointing to `purchaser_plan.id`.
-- `payer_id` (STRING): Foreign key lookup pointing to the payer’s Account object record (`business_account.id`).
+- `payer_id` (STRING): Foreign key lookup pointing to the payer’s Account object record (`account.id`).
 - `payer_network_id` (STRING): Foreign key pointing to a healthcare payer network table.
 - `group_number` (STRING): The group number or policy number of the primary member.
 - `issuer_number` (STRING): Reference number for the issuer of the plan.
@@ -174,7 +432,7 @@ Represents the payer plan that a purchaser makes available to its members and me
 - `id` (STRING): Unique ID of the Purchaser Plan.
 - `name` (STRING): The name of this plan.
 - `plan_number` (STRING): The plan’s reference number.
-- `payer` (STRING): Foreign key lookup pointing to the payer's Account object record (`business_account.id`).
+- `payer` (STRING): Foreign key lookup pointing to the payer's Account object record (`account.id`).
 - `plan_status` (STRING): Picklist indicating whether the plan is active.
 - `plan_type` (STRING): The type of plan (e.g., 'PPO', 'HMO', 'Medicare', 'Medicaid', 'Workers Comp').
 - `line_of_business` (STRING): Category of insurance policy that the plan belongs to (e.g., group health insurance, individual health insurance).
@@ -333,22 +591,26 @@ Enforces hard metrics, exclusion conditions, and ceilings directly on a coverage
 
 ---
 
-## Step-by-Step Join Guidance
+## Join Guidance
 
-When executing analytics queries or building user summaries via Genie, perform table joins through the structural hierarchy sequence below:
-`person_account (id)` -> `member_plan (account_id)` -> `coverage_benefit (member_plan_id)` -> `coverage_benefit_item (coverage_benefit_id)` -> `coverage_benefit_item_limit (coverage_benefit_item_id)`.
+Join through the structural hierarchy:
+`account (id)` → `member_plan (payer_id / member context)` → `coverage_benefit (member_plan_id)` → `coverage_benefit_item (coverage_benefit_id)` → `coverage_benefit_item_limit (coverage_benefit_item_id)`.
 
-**Filter Logic Guardrails:**
-- To identify if checking individual rules, confirm active states using: `WHERE member_plan.status = 'Active' AND coverage_benefit.is_active = true AND coverage_benefit_item.is_active = true`
+Verification requests link in via `care_benefit_verify_request.member_plan_id` and
+`.coverage_benefit_id`. Purchaser plan context comes from `member_plan.plan_id → purchaser_plan.id`.
+
+**Filter guardrails:** for active-rule questions, use
+`WHERE member_plan.status = 'Active' AND coverage_benefit.is_active = true AND coverage_benefit_item.is_active = true`.
 
 ---
 
 ## SQL Examples
 
-### Example 1: Calculate Remaining Quantities Left for a Member's Plan Services
+### Calculate remaining service quantities for a member's plan
+
 ```sql
-SELECT 
-    pa.name AS member_name,
+SELECT
+    a.name AS member_name,
     mp.name AS plan_name,
     cbi.name AS service_covered,
     cbil.allowed_quantity,
@@ -356,156 +618,10 @@ SELECT
     (cbil.allowed_quantity - cbil.applied_quantity) AS remaining_quantity_allowed,
     cbil.term_type
 FROM member_plan mp
-JOIN person_account pa ON mp.account_id = pa.id
+JOIN account a ON mp.payer_id = a.id
 JOIN coverage_benefit cb ON cb.member_plan_id = mp.id
 JOIN coverage_benefit_item cbi ON cbi.coverage_benefit_id = cb.id
 JOIN coverage_benefit_item_limit cbil ON cbil.coverage_benefit_item_id = cbi.id
-WHERE mp.status = 'Active' 
+WHERE mp.status = 'Active'
   AND cb.is_active = true;
 ```
-
----
-
-## Metric View for Genie
-
-The Genie space should be built on a **Unity Catalog metric view** rather than the
-raw tables directly. A metric view is a governed semantic layer (defined in YAML)
-that separates **measures** (what "average deductible remaining" means) from
-**dimensions** (how to slice it — by plan type, coverage type, network), and
-declares the join graph once. Metric views have native AI/BI Genie integration,
-so this gives Genie certified benefit metrics and correct joins for free.
-
-> Replace `${catalog}.${schema}` below with the catalog/schema where the Lakeflow
-> Connect tables land. The metric view requires **Databricks Runtime 17.2+** for
-> YAML `version: 1.1`.
-
-### Step 1: Create the metric view
-
-The view is sourced from `coverage_benefit` (the grain that carries the financial
-benefit figures) and joins outward to the member/plan context. Measures
-re-aggregate safely at any grouping.
-
-```sql
-CREATE OR REPLACE VIEW ${catalog}.${schema}.benefits_metrics
-WITH METRICS
-LANGUAGE YAML
-AS $$
-version: 1.1
-comment: "Governed Health Cloud benefit verification metrics powering the Genie space"
-source: ${catalog}.${schema}.coverage_benefit
-
-joins:
-  - name: member_plan
-    source: ${catalog}.${schema}.member_plan
-    on: source.member_plan_id = member_plan.id
-  - name: purchaser_plan
-    source: ${catalog}.${schema}.purchaser_plan
-    on: member_plan.plan_id = purchaser_plan.id
-
-dimensions:
-  - name: Coverage Type
-    expr: source.coverage_type
-    comment: "Medical, Dental, Vision, Home Health, Pharmacy"
-  - name: Plan Type
-    expr: purchaser_plan.plan_type
-    comment: "PPO, HMO, Medicare, Medicaid, Workers Comp"
-  - name: Line of Business
-    expr: purchaser_plan.line_of_business
-  - name: Verification Status
-    expr: member_plan.verification_status
-  - name: Benefit Period Month
-    expr: DATE_TRUNC('MONTH', source.benefit_period_start_date)
-    comment: "Month the coverage benefit period starts"
-  - name: Is Active Benefit
-    expr: source.is_active
-
-measures:
-  # Volume
-  - name: Coverage Benefit Count
-    expr: COUNT(1)
-  - name: Member Plan Count
-    expr: COUNT(DISTINCT source.member_plan_id)
-
-  # Cost sharing (copays / coinsurance)
-  - name: Avg Primary Care Copay
-    expr: AVG(source.primary_care_copay)
-  - name: Avg Specialist Copay
-    expr: AVG(source.specialist_copay)
-  - name: Avg In-Network Coinsurance Pct
-    expr: AVG(source.in_network_coinsurance_percentage)
-    comment: "Average in-network coinsurance percentage across benefits"
-
-  # Deductibles
-  - name: Avg Individual In-Network Deductible Remaining
-    expr: AVG(source.individual_in_network_deductible_remaining)
-  - name: Total Individual In-Network Deductible Applied
-    expr: SUM(source.individual_in_network_deductible_applied)
-
-  # Out-of-pocket
-  - name: Avg Individual In-Network OOP Remaining
-    expr: AVG(source.individual_in_network_out_of_pocket_remaining)
-    comment: "Average remaining in-network individual out-of-pocket headroom"
-  - name: Total Family In-Network OOP Applied
-    expr: SUM(source.family_in_network_out_of_pocket_applied)
-$$
-```
-
-> **Utilization/quantity metrics** (allowed vs. applied visit quantities) live on
-> `coverage_benefit_item_limit`, which is below the `coverage_benefit` grain. Model
-> those as a **second metric view** sourced from `coverage_benefit_item_limit`
-> (joining up through `coverage_benefit_item` → `coverage_benefit` → `member_plan`
-> → `purchaser_plan` for the same dimensions), e.g. `SUM(allowed_quantity)`,
-> `SUM(applied_quantity)`, and `SUM(allowed_quantity - applied_quantity)` as
-> "Remaining Quantity". Keeping one view per grain avoids fan-out double counting.
-
-### Step 2: Validate the metric view
-
-Metric views require the `MEASURE()` function and do **not** support `SELECT *`:
-
-```sql
-SELECT
-  `Coverage Type`,
-  `Plan Type`,
-  MEASURE(`Avg Individual In-Network Deductible Remaining`) AS avg_deductible_remaining,
-  MEASURE(`Coverage Benefit Count`) AS benefit_count
-FROM ${catalog}.${schema}.benefits_metrics
-WHERE `Is Active Benefit` = true
-GROUP BY ALL
-ORDER BY ALL
-```
-
-### Step 3: Point the Genie space at the metric view(s)
-
-List the metric view(s) as the space's tables — not the raw tables — so Genie
-inherits the governed measures and joins. Add raw tables only when users need
-row-level detail (e.g., "show the individual limit rows for member X").
-
-```python
-create_or_update_genie(
-    display_name="Health Cloud Benefits Verification",
-    table_identifiers=[
-        "${catalog}.${schema}.benefits_metrics",            # cost-sharing metric view
-        "${catalog}.${schema}.benefit_utilization_metrics", # quantity/limit metric view
-    ],
-    description="""Benefit verification analytics backed by governed metric views.
-Cost-sharing measures: Avg Primary Care Copay, Avg Individual In-Network Deductible
-Remaining, Avg Individual In-Network OOP Remaining. Utilization measures: Allowed,
-Applied, and Remaining Quantity. Dimensions: Coverage Type, Plan Type, Line of
-Business, Verification Status, Benefit Period Month.""",
-    sample_questions=[
-        "What is the average in-network deductible remaining by plan type?",
-        "Show remaining visit quantity by coverage type for active benefits",
-        "How many member plans are Active - Verified vs Not Checked?",
-        "Average specialist copay for PPO vs HMO plans",
-    ],
-)
-```
-
-### Why a metric view here
-
-| Without metric view | With metric view |
-|---------------------|------------------|
-| Genie re-derives deductible/OOP averages and the multi-table join every question | One certified definition + declared joins |
-| Ratios/percentages risk incorrect re-aggregation | Measures re-aggregate safely at any grain |
-| Metric logic drifts across dashboards, SQL, and Genie | Single governed source of truth |
-| Fan-out across item/limit tables can double-count | One view per grain prevents double counting |
